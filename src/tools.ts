@@ -4,7 +4,7 @@ import { z } from "zod";
 import { config, isConfigured } from "./config.ts";
 import { eb, EnableBankingError } from "./enablebanking.ts";
 import { pendingAuthIsLive, store, type StoredAccount, type WatchRule } from "./store.ts";
-import { daysAgo, daysLeft, describeAccount, isoDate, simplifyBalances, simplifyTransaction } from "./data.ts";
+import { daysAgo, daysLeft, describeAccount, isoDate, simplifyBalances, simplifyTransactions } from "./data.ts";
 import { runWatches } from "./watcher.ts";
 
 const MAX_CONSENT_DAYS = 180;
@@ -271,19 +271,17 @@ export function registerTools(server: McpServer): void {
         await withAccount(account, async (a) => {
           const dateFrom = from ?? daysAgo(30);
           const dateTo = to ?? isoDate();
-          const all = [];
-          const raw = [];
+          const fetched = [];
           let key = continuation;
           let pages = 0;
           do {
             const pageData = await eb.getTransactionPage(a.uid, { dateFrom, dateTo, continuationKey: key });
-            for (const t of pageData.transactions) {
-              all.push(simplifyTransaction(t));
-              if (include_raw) raw.push(t);
-            }
+            fetched.push(...pageData.transactions);
             key = pageData.continuation_key || undefined;
             pages += 1;
           } while (key && pages < max_pages);
+          const all = simplifyTransactions(fetched);
+          const raw = include_raw ? fetched : [];
           all.sort((x, y) => (y.date > x.date ? 1 : y.date < x.date ? -1 : 0));
           const inflow = all.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
           const outflow = all.filter((t) => t.amount < 0).reduce((s, t) => s + t.amount, 0);

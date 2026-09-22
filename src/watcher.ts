@@ -5,7 +5,7 @@
 import { config } from "./config.ts";
 import { eb, EnableBankingError } from "./enablebanking.ts";
 import { store, type StoredAccount, type Watch } from "./store.ts";
-import { daysLeft, isoDate, simplifyBalances, simplifyTransaction, type SimpleTransaction } from "./data.ts";
+import { daysLeft, isoDate, simplifyBalances, simplifyTransactions, type SimpleTransaction } from "./data.ts";
 
 export interface WatchEvent {
   watch_id: string;
@@ -134,17 +134,19 @@ async function checkAccount(account: StoredAccount, watches: Watch[]): Promise<W
   let booked: number | undefined;
   if (needsBalance) booked = simplifyBalances(await eb.getBalances(account.uid)).booked;
 
-  const txs: SimpleTransaction[] = [];
+  let txs: SimpleTransaction[] = [];
   if (needsTx) {
     // Look back far enough to cover the oldest open "missing credit" watch, but at most 90 days.
     const oldest = Math.min(...watches.filter((w) => w.rule.type === "credit_missing_by").map((w) => Date.parse(w.created)), Date.now() - 3 * 86_400_000);
     const from = new Date(Math.max(oldest, Date.now() - 90 * 86_400_000)).toISOString().slice(0, 10);
+    const fetched = [];
     let key: string | undefined;
     do {
       const pageData = await eb.getTransactionPage(account.uid, { dateFrom: from, dateTo: isoDate(), continuationKey: key });
-      txs.push(...pageData.transactions.map(simplifyTransaction));
+      fetched.push(...pageData.transactions);
       key = pageData.continuation_key || undefined;
-    } while (key && txs.length < 2000);
+    } while (key && fetched.length < 2000);
+    txs = simplifyTransactions(fetched);
   }
 
   const events = evaluate(account, watches, booked, txs);
