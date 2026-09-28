@@ -89,6 +89,34 @@ test("five wrong passwords lock the address out", async () => {
   assert.ok("error" in r && /Too many/.test(r.error));
 });
 
+async function loginWith(provider: InstanceType<typeof SingleUserProvider>, password: string, ip: string) {
+  const client = await provider.clientsStore.registerClient!({ redirect_uris: ["https://claude.ai/cb"] });
+  const { out, res } = fakeRes();
+  await provider.authorize(client, { codeChallenge: "c", redirectUri: "https://claude.ai/cb" }, res);
+  const id = /name="request" value="([^"]+)"/.exec(out.body)![1]!;
+  return provider.completeLogin(id, password, ip);
+}
+
+test("wrong passwords from many addresses lock sign-in for every address, for 15 minutes (#8)", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-28T12:00:00Z") });
+  const provider = new SingleUserProvider(new Store(join(mkdtempSync(join(tmpdir(), "bank-")), "store.json")));
+  // One wrong password from each of 20 addresses, as with a faked X-Forwarded-For: no address reaches its own limit.
+  for (let i = 0; i < 20; i++) await loginWith(provider, "wrong", `10.0.0.${i}`);
+  const locked = await loginWith(provider, "correct horse", "10.0.1.1");
+  assert.ok("error" in locked && /Too many/.test(locked.error), "the right password from a new address is refused while locked");
+  t.mock.timers.tick(16 * 60 * 1000);
+  assert.ok("redirect" in (await loginWith(provider, "correct horse", "10.0.1.1")), "the lock ends after 15 minutes");
+});
+
+test("an address that stayed under the limit starts from zero after 15 minutes (#8)", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-28T12:00:00Z") });
+  const provider = new SingleUserProvider(new Store(join(mkdtempSync(join(tmpdir(), "bank-")), "store.json")));
+  for (let i = 0; i < 4; i++) await loginWith(provider, "wrong", "7.7.7.7");
+  t.mock.timers.tick(16 * 60 * 1000);
+  await loginWith(provider, "wrong", "7.7.7.7");
+  assert.ok("redirect" in (await loginWith(provider, "correct horse", "7.7.7.7")), "four old failures and one new one do not lock the address");
+});
+
 test("revokeAll drops every token", async () => {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "bank-")), "store.json"));
   const events: unknown[] = [];

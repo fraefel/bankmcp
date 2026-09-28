@@ -19,6 +19,13 @@ const REFRESH_TTL = 90 * 24 * 60 * 60; // 90 days
 const CODE_TTL = 10 * 60;
 const LOGIN_TTL = 30 * 60;
 const DONE_TTL = 30 * 60; // how long a used sign-in page is remembered, so a repeat submit gets a calm answer
+// Wrong passwords. One address is locked out after IP_LIMIT; the whole server after GLOBAL_LIMIT from all addresses
+// together. The address comes from X-Forwarded-For behind a proxy and can be faked when the server is reached directly,
+// so the server-wide limit is what holds in that case. A failure counts for WINDOW seconds.
+const IP_LIMIT = 5;
+const GLOBAL_LIMIT = 20;
+const WINDOW = 15 * 60;
+const LOCKOUT = 15 * 60;
 
 // --- Password ---
 
@@ -76,7 +83,10 @@ export interface LoginEvent {
 export class SingleUserProvider implements OAuthServerProvider {
   private pendingLogins = new Map<string, PendingLogin>();
   private completedLogins = new Map<string, number>();
-  private failures = new Map<string, { count: number; until: number }>();
+  private failures = new Map<string, { count: number; until: number; last: number }>();
+  /** Times of recent wrong passwords from every address, newest last. */
+  private recentFailures: number[] = [];
+  private lockedUntil = 0;
   private store: Store;
   private onLogin?: (e: LoginEvent) => void;
 
@@ -133,6 +143,10 @@ export class SingleUserProvider implements OAuthServerProvider {
   /** Called by POST /login. Returns the redirect URL on success, or an error message. */
   completeLogin(requestId: string, password: string, ip: string): { redirect: string } | { done: true } | { error: string; requestId?: string } {
     this.sweep();
+    if (this.lockedUntil > now()) {
+      this.onLogin?.({ ok: false, ip, reason: "sign-in locked for every address" });
+      return { error: "Too many attempts. Try again in a few minutes." };
+    }
     const lock = this.failures.get(ip);
     if (lock && lock.until > now()) {
       this.onLogin?.({ ok: false, ip, reason: "locked out" });
@@ -147,18 +161,23 @@ export class SingleUserProvider implements OAuthServerProvider {
 
     if (!verifyPassword(password)) {
       pending.attempts += 1;
-      const f = this.failures.get(ip) ?? { count: 0, until: 0 };
+      const f = this.failures.get(ip) ?? { count: 0, until: 0, last: 0 };
       f.count += 1;
-      if (f.count >= 5) f.until = now() + 15 * 60;
+      f.last = now();
+      if (f.count >= IP_LIMIT) f.until = now() + LOCKOUT;
       this.failures.set(ip, f);
+      this.recentFailures.push(now());
+      const lockAll = this.recentFailures.length >= GLOBAL_LIMIT;
+      if (lockAll) this.lockedUntil = now() + LOCKOUT;
       if (pending.attempts >= 5) this.pendingLogins.delete(requestId);
-      this.onLogin?.({ ok: false, ip, clientName: pending.client.client_name, reason: "wrong password" });
+      this.onLogin?.({ ok: false, ip, clientName: pending.client.client_name, reason: lockAll ? `wrong password; ${GLOBAL_LIMIT} in ${WINDOW / 60} minutes, sign-in locked for every address for ${LOCKOUT / 60} minutes` : "wrong password" });
       return { error: "Wrong password.", requestId: pending.attempts < 5 ? requestId : undefined };
     }
 
     this.pendingLogins.delete(requestId);
     this.completedLogins.set(requestId, now() + DONE_TTL);
     this.failures.delete(ip);
+    this.recentFailures = [];
     this.onLogin?.({ ok: true, ip, clientName: pending.client.client_name });
     const code = token();
     this.store.update((d) => {
@@ -240,6 +259,8 @@ export class SingleUserProvider implements OAuthServerProvider {
     const t = now();
     for (const [k, v] of this.pendingLogins) if (v.expires < t) this.pendingLogins.delete(k);
     for (const [k, v] of this.completedLogins) if (v < t) this.completedLogins.delete(k);
-    for (const [k, v] of this.failures) if (v.until && v.until < t) this.failures.delete(k);
+    // Locked addresses are forgotten when the lock ends; the others when their last failure is older than WINDOW.
+    for (const [k, v] of this.failures) if (v.until ? v.until < t : v.last < t - WINDOW) this.failures.delete(k);
+    while (this.recentFailures.length && this.recentFailures[0]! < t - WINDOW) this.recentFailures.shift();
   }
 }
