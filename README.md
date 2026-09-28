@@ -118,7 +118,7 @@ or `docker compose up -d` with [compose.yaml](compose.yaml). Then put a TLS
 terminator in front (Caddy needs two lines:
 `YOUR-HOST { reverse_proxy localhost:8080 }`) and set `BASE_URL` to the
 public address. The server binds every interface by default. When the proxy
-runs on the same machine, set `HOST=127.0.0.1` so nothing else on the local
+runs on the same machine, set `BIND_HOST=127.0.0.1` so nothing else on the local
 network reaches the login and setup pages.
 
 Open the address. A fresh server shows a setup page.
@@ -272,7 +272,9 @@ bank either way; that part is regulated and unavoidable.
 - The server is a complete OAuth 2.1 authorization server with one user.
   Discovery, dynamic client registration and PKCE come from the MCP SDK;
   tokens are stored hashed; five wrong passwords lock an address out for
-  fifteen minutes.
+  fifteen minutes, and twenty from all addresses together lock sign-in for
+  everyone for fifteen minutes. Assistants that are already connected keep
+  working during a lock.
 - State is one JSON file in `DATA_DIR`: consents, account ids, watches (with
   the ids of transactions that already fired) and OAuth tokens. Balances and
   transactions are not written to disk. Your assistant keeps the
@@ -297,6 +299,9 @@ bank either way; that part is regulated and unavoidable.
   mode (`npx bankmcp`) there is no OAuth: the client on your machine talks to
   the server over stdio, and whoever can run processes on that machine can use
   it.
+- Transaction descriptions and counterparty names are written by other people,
+  for example whoever sent you a payment. The server tells assistants to treat
+  them as data, not as instructions. An assistant can still be misled by them.
 - Anyone with the admin password can read your accounts. Use a long one.
   Every successful sign-in is logged and, if `NOTIFY_WEBHOOK_URL` is set,
   sent to you as a message. A sign-in you did not make is your alarm.

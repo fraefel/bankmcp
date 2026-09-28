@@ -11,9 +11,10 @@ const env = process.env;
 const localMode = env.BANKMCP_LOCAL === "1";
 const port = Number(env.PORT ?? 8080);
 // Which interface the hosted server binds to. Every interface by default, because container platforms route
-// to the container's address. Set HOST=127.0.0.1 when a proxy or a tunnel on the same machine is the only
+// to the container's address. Set BIND_HOST=127.0.0.1 when a proxy or a tunnel on the same machine is the only
 // thing that should reach the server, so the login and setup pages are not exposed to the local network.
-const host = env.HOST || "0.0.0.0";
+// Not called HOST: some shells export HOST with the machine's name.
+const host = env.BIND_HOST || "0.0.0.0";
 const dataDir = env.DATA_DIR ?? (localMode ? join(homedir(), ".bankmcp") : "./data");
 
 export interface Settings {
