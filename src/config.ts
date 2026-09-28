@@ -10,6 +10,10 @@ const env = process.env;
 // machine over stdio. No OAuth, no admin password; state lives in ~/.bankmcp.
 const localMode = env.BANKMCP_LOCAL === "1";
 const port = Number(env.PORT ?? 8080);
+// Which interface the hosted server binds to. Every interface by default, because container platforms route
+// to the container's address. Set HOST=127.0.0.1 when a proxy or a tunnel on the same machine is the only
+// thing that should reach the server, so the login and setup pages are not exposed to the local network.
+const host = env.HOST || "0.0.0.0";
 const dataDir = env.DATA_DIR ?? (localMode ? join(homedir(), ".bankmcp") : "./data");
 
 export interface Settings {
@@ -71,6 +75,7 @@ export const config = {
     return (env.DEFAULT_COUNTRY ?? settings.country ?? "DK").toUpperCase();
   },
   port,
+  host,
   baseUrl: detectBaseUrl(),
   dataDir,
   appName: env.APP_NAME ?? "BankMCP™",

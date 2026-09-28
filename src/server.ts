@@ -19,8 +19,8 @@ if (config.localMode && !tls) {
   process.exit(1);
 }
 const httpServer = tls ? createHttpsServer(tls, app) : createHttpServer(app);
-httpServer.listen(config.port, () => {
-  console.log(`[bank ${new Date().toISOString()}] listening on ${tls ? "https" : "http"}://0.0.0.0:${config.port}, public URL ${config.baseUrl}`);
+httpServer.listen(config.port, config.host, () => {
+  console.log(`[bank ${new Date().toISOString()}] listening on ${tls ? "https" : "http"}://${config.host}:${config.port}, public URL ${config.baseUrl}`);
   const problems = setupProblems();
   if (problems.length) console.log(`[bank] ${setupAvailable() ? `not configured yet: open ${config.baseUrl} to finish setup` : "not configured:"}`, problems);
   else app.startWatcherOnce();

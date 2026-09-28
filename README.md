@@ -117,7 +117,9 @@ docker run -d --name bankmcp --restart unless-stopped \
 or `docker compose up -d` with [compose.yaml](compose.yaml). Then put a TLS
 terminator in front (Caddy needs two lines:
 `YOUR-HOST { reverse_proxy localhost:8080 }`) and set `BASE_URL` to the
-public address.
+public address. The server binds every interface by default. When the proxy
+runs on the same machine, set `HOST=127.0.0.1` so nothing else on the local
+network reaches the login and setup pages.
 
 Open the address. A fresh server shows a setup page.
 
