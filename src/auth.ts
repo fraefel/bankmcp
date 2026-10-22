@@ -8,8 +8,9 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { InvalidGrantError, InvalidClientError, InvalidClientMetadataError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { InvalidGrantError, InvalidClientError, InvalidClientMetadataError, InvalidScopeError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { config } from "./config.ts";
+import { maxAttestableBalance } from "./attestation.ts";
 import { loginPage } from "./pages.ts";
 export { loginPage, shell as page } from "./pages.ts";
 import type { Store, OAuthClient } from "./store.ts";
@@ -59,6 +60,13 @@ export function redirectAllowed(uri: string): boolean {
     return false;
   }
 }
+
+// Scopes. A token with bank:attest and not bank:read sees only attest_account, for a third party the owner proves an
+// account to. Any other token, including one that asked for no scope at all, gets every tool; the sign-in page says
+// which of the two the owner is granting.
+export const SCOPE_READ = "bank:read";
+export const SCOPE_ATTEST = "bank:attest";
+export const attestOnly = (scopes: string[]) => scopes.includes(SCOPE_ATTEST) && !scopes.includes(SCOPE_READ);
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const token = () => randomBytes(32).toString("base64url");
@@ -137,7 +145,21 @@ export class SingleUserProvider implements OAuthServerProvider {
     this.sweep();
     const id = token();
     this.pendingLogins.set(id, { client, params, expires: now() + LOGIN_TTL, attempts: 0 });
-    res.status(200).type("html").send(loginPage({ requestId: id, clientName: client.client_name, returnTo: new URL(params.redirectUri).hostname }));
+    res.status(200).type("html").send(this.loginPageFor(id));
+  }
+
+  /** The sign-in page for a pending request, saying which access it grants. */
+  loginPageFor(requestId: string, error?: string): string {
+    const pending = this.pendingLogins.get(requestId);
+    const scoped = attestOnly(pending?.params.scopes ?? []);
+    return loginPage({
+      requestId,
+      error,
+      clientName: pending?.client.client_name,
+      returnTo: pending ? new URL(pending.params.redirectUri).hostname : undefined,
+      attestOnly: scoped,
+      balanceCeiling: scoped ? maxAttestableBalance() : undefined,
+    });
   }
 
   /** Called by POST /login. Returns the redirect URL on success, or an error message. */
@@ -227,6 +249,8 @@ export class SingleUserProvider implements OAuthServerProvider {
     if (!t || t.kind !== "refresh" || t.client_id !== client.client_id) throw new InvalidGrantError("Invalid refresh token");
     if (t.expires < now()) throw new InvalidGrantError("Refresh token expired");
     if (resource && t.resource && resource.href !== t.resource) throw new InvalidGrantError("resource does not match");
+    // A refresh may narrow what was granted, never widen it: an attestation-only token must not become a full one.
+    if (scopes?.length && t.scopes.length && scopes.some((s) => !t.scopes.includes(s))) throw new InvalidScopeError("Requested scope was not granted");
     return this.store.update((d) => {
       delete d.oauth.tokens[key];
       return this.issue(d.oauth.tokens, client.client_id, scopes?.length ? scopes : t.scopes, t.resource);
