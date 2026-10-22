@@ -209,6 +209,8 @@ service to others. This project does not change those terms.
 | `list_accounts`, `set_account_label` | accounts with booked balances; your own names for them |
 | `get_balances` | booked and available balance for one account |
 | `get_transactions` | signed amounts, one counterparty, one description; paginated |
+| `search_transactions` | find a merchant or invoice number across all accounts; whole-word matches |
+| `monthly_summary` | money in and out per month, transfers between your own accounts left out |
 | `create_watch`, `list_watches`, `delete_watch`, `check_watches` | background rules with webhook notifications |
 
 **Prompts**: `connect-bank`, `monthly-summary`, `build-budget`,

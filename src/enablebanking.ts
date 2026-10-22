@@ -48,6 +48,8 @@ export interface Transaction {
   transaction_date?: string;
   creditor?: { name?: string };
   debtor?: { name?: string };
+  creditor_account?: { iban?: string; other?: { identification?: string } };
+  debtor_account?: { iban?: string; other?: { identification?: string } };
   remittance_information?: string[];
   bank_transaction_code?: { code?: string; sub_code?: string; description?: string };
   merchant_category_code?: string;

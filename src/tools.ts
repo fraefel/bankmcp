@@ -4,7 +4,19 @@ import { z } from "zod";
 import { config, isConfigured } from "./config.ts";
 import { eb, EnableBankingError } from "./enablebanking.ts";
 import { pendingAuthIsLive, store, type StoredAccount, type WatchRule } from "./store.ts";
-import { daysAgo, daysLeft, describeAccount, isoDate, simplifyBalances, simplifyTransactions } from "./data.ts";
+import {
+  daysAgo,
+  daysLeft,
+  describeAccount,
+  findOwnTransfers,
+  isoDate,
+  matchesQuery,
+  round2,
+  simplifyBalances,
+  simplifyTransactions,
+  totalsByMonth,
+  type AccountTransaction,
+} from "./data.ts";
 import { runWatches } from "./watcher.ts";
 
 const MAX_CONSENT_DAYS = 180;
@@ -43,6 +55,55 @@ async function withAccount<T>(ref: string, fn: (a: StoredAccount) => Promise<T>)
     }
     throw err;
   }
+}
+
+/** Pages fetched per account by the tools that read across accounts. */
+const MAX_PAGES_PER_ACCOUNT = 50;
+
+interface Checked {
+  account: string;
+  uid: string;
+  from: string;
+  to: string;
+  transactions: number;
+  /** False when the page cap stopped the fetch, or the account could not be read. */
+  complete: boolean;
+  error?: string;
+}
+
+/**
+ * Every transaction of the given accounts (all of them when none are named) in a date range, with a record of what
+ * was checked. An account that fails is reported in `checked` rather than failing the whole call.
+ */
+async function fetchAcross(refs: string[] | undefined, from: string, to: string): Promise<{ transactions: AccountTransaction[]; checked: Checked[] }> {
+  const accounts = refs?.length ? refs.map(resolveAccount) : store().accounts();
+  if (!accounts.length) throw new ToolError("No accounts are connected yet. Run start_consent first.");
+  const transactions: AccountTransaction[] = [];
+  const checked: Checked[] = [];
+  for (const account of accounts) {
+    const name = account.label ?? account.name ?? account.uid;
+    try {
+      const { fetched, complete } = await withAccount(account.uid, async (a) => {
+        const fetched = [];
+        let key: string | undefined;
+        let pages = 0;
+        do {
+          const page = await eb.getTransactionPage(a.uid, { dateFrom: from, dateTo: to, continuationKey: key });
+          fetched.push(...page.transactions);
+          key = page.continuation_key || undefined;
+          pages += 1;
+        } while (key && pages < MAX_PAGES_PER_ACCOUNT);
+        return { fetched, complete: !key };
+      });
+      const simple = simplifyTransactions(fetched);
+      transactions.push(...simple.map((t) => ({ ...t, account_uid: account.uid })));
+      checked.push({ account: name, uid: account.uid, from, to, transactions: simple.length, complete });
+    } catch (err) {
+      if (!(err instanceof ToolError)) throw err;
+      checked.push({ account: name, uid: account.uid, from, to, transactions: 0, complete: false, error: err.message });
+    }
+  }
+  return { transactions, checked };
 }
 
 function guard<A extends unknown[]>(fn: (...args: A) => Promise<ReturnType<typeof json> | ReturnType<typeof fail>>) {
@@ -256,7 +317,7 @@ export function registerTools(server: McpServer): void {
     {
       title: "Get transactions",
       description:
-        "Transactions of one account, newest first. Amounts are signed (negative = money out). Defaults to the last 30 days. Banks return limited history (often 90 days, some up to 2 years). If the result has `continuation`, pass it back to fetch more.",
+        "Transactions of one account, newest first. Amounts are signed (negative = money out). Defaults to the last 30 days. Banks return limited history (often 90 days, some up to 2 years). If the result has `continuation`, pass it back to fetch more. A busy account can return hundreds of transactions: to find a merchant or reference use search_transactions, and for totals over months use monthly_summary, rather than reading long lists.",
       inputSchema: {
         account: z.string().describe("Account uid or label"),
         from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default 30 days ago"),
@@ -300,6 +361,65 @@ export function registerTools(server: McpServer): void {
         }),
       ),
     ),
+  );
+
+  server.registerTool(
+    "search_transactions",
+    {
+      title: "Search transactions",
+      description:
+        "Transactions across accounts whose counterparty or description contains a merchant name, invoice number or other reference, newest first. " +
+        "Matches whole words, case-insensitive: `1044` finds `Invoice 1044` but not `1044B`. Searches every connected account unless `accounts` is given. " +
+        "Defaults to the last 90 days. `checked` lists each account and date range searched; one with `complete: false` was not fully read.",
+      inputSchema: {
+        query: z.string().min(1).describe("Merchant name, invoice number or other text to look for"),
+        accounts: z.array(z.string()).optional().describe("Account uids or labels; default all"),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default 90 days ago"),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default today"),
+      },
+    },
+    guard(async ({ query, accounts, from, to }) => {
+      const { transactions, checked } = await fetchAcross(accounts, from ?? daysAgo(90), to ?? isoDate());
+      const names = new Map(checked.map((c) => [c.uid, c.account]));
+      const matches = transactions
+        .filter((t) => matchesQuery(t, query))
+        .sort((x, y) => (y.date > x.date ? 1 : y.date < x.date ? -1 : 0))
+        .map(({ account_uid, ...t }) => ({ account: names.get(account_uid), ...t }));
+      const totals: Record<string, number> = {};
+      for (const t of matches) totals[t.currency] = round2((totals[t.currency] ?? 0) + t.amount);
+      return json({ query, count: matches.length, totals, checked, transactions: matches });
+    }),
+  );
+
+  server.registerTool(
+    "monthly_summary",
+    {
+      title: "Monthly summary",
+      description:
+        "Money in and money out per calendar month across accounts, in each currency, without returning the transactions. " +
+        "Transfers between the owner's own accounts are left out of both sides, card repayments to a connected card account included: " +
+        "a transaction counts as a transfer when its counterparty account is a connected account, or when another connected account has the opposite amount within two days. " +
+        "Card purchases and refunds stay in. Defaults to the last 90 days; whole months give clean totals. `checked` lists each account and date range read.",
+      inputSchema: {
+        accounts: z.array(z.string()).optional().describe("Account uids or labels; default all"),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default 90 days ago"),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default today"),
+      },
+    },
+    guard(async ({ accounts, from, to }) => {
+      const { transactions, checked } = await fetchAcross(accounts, from ?? daysAgo(90), to ?? isoDate());
+      const ownIds = store()
+        .accounts()
+        .flatMap((a) => [a.iban, a.other_id].filter((v): v is string => Boolean(v)));
+      const transfers = findOwnTransfers(transactions, ownIds);
+      const transferTotals: Record<string, number> = {};
+      for (const t of transfers) if (t.amount < 0) transferTotals[t.currency] = round2((transferTotals[t.currency] ?? 0) - t.amount);
+      return json({
+        months: totalsByMonth(transactions, transfers),
+        transfers_excluded: { transactions: transfers.size, amount_moved: transferTotals },
+        checked,
+      });
+    }),
   );
 
   // --- Watches ---

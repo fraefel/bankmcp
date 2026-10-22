@@ -13,6 +13,8 @@ export interface SimpleTransaction {
   amount: number;
   currency: string;
   counterparty?: string;
+  /** The other side's IBAN or account number, when the bank reports it. */
+  counterparty_account?: string;
   description?: string;
   status: string;
   balance_after?: number;
@@ -40,6 +42,7 @@ export function simplifyTransaction(t: Transaction): SimpleTransaction {
   const signed = Number(t.transaction_amount.amount) * (t.credit_debit_indicator === "DBIT" ? -1 : 1);
   const counterparty = (t.credit_debit_indicator === "DBIT" ? t.creditor?.name : t.debtor?.name) || undefined;
   const description = [t.remittance_information?.join(" "), t.bank_transaction_code?.description, t.note].find((s) => s && s.trim()) || undefined;
+  const other = t.credit_debit_indicator === "DBIT" ? t.creditor_account : t.debtor_account;
   return {
     id: t.entry_reference || fingerprint(t, signed, counterparty, description),
     date: t.booking_date || t.value_date || t.transaction_date || "",
@@ -47,6 +50,7 @@ export function simplifyTransaction(t: Transaction): SimpleTransaction {
     amount: round2(signed),
     currency: t.transaction_amount.currency,
     counterparty,
+    counterparty_account: other?.iban || other?.other?.identification || undefined,
     description: description && description !== counterparty ? description : undefined,
     status: t.status,
     balance_after: t.balance_after_transaction ? round2(Number(t.balance_after_transaction.amount)) : undefined,
@@ -96,6 +100,85 @@ export function simplifyBalances(balances: Balance[]): SimpleBalances {
     reference_date: (booked ?? balances[0])?.reference_date,
     all: balances.map((b) => ({ type: b.balance_type, name: b.name, amount: round2(Number(b.balance_amount.amount)), reference_date: b.reference_date })),
   };
+}
+
+const normalizeId = (s: string) => s.replace(/\s+/g, "").toUpperCase();
+
+/** True when `query` appears in the counterparty or description as a whole token, case-insensitive:
+ * "1044" matches "Invoice 1044" and "INV-1044" but not "1044B" or "21044". */
+export function matchesQuery(t: SimpleTransaction, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  for (const field of [t.counterparty, t.description]) {
+    const text = field?.toLowerCase();
+    if (!text) continue;
+    for (let i = text.indexOf(q); i !== -1; i = text.indexOf(q, i + 1)) {
+      const before = text[i - 1];
+      const after = text[i + q.length];
+      if ((before === undefined || !/[\p{L}\p{N}]/u.test(before)) && (after === undefined || !/[\p{L}\p{N}]/u.test(after))) return true;
+    }
+  }
+  return false;
+}
+
+export interface AccountTransaction extends SimpleTransaction {
+  account_uid: string;
+}
+
+/**
+ * Finds transfers between the owner's own accounts, card repayments to a connected card included. A transaction is a
+ * transfer when its counterparty account is one of `ownIds`, or when another connected account has the opposite
+ * amount in the same currency within two days. Each transaction pairs at most once. Returns both legs of each.
+ */
+export function findOwnTransfers(list: AccountTransaction[], ownIds: string[]): Set<AccountTransaction> {
+  const own = new Set(ownIds.map(normalizeId));
+  const transfers = new Set<AccountTransaction>();
+  for (const t of list) if (t.counterparty_account && own.has(normalizeId(t.counterparty_account))) transfers.add(t);
+  const dayMs = 86_400_000;
+  const outs = list.filter((t) => t.amount < 0 && !transfers.has(t));
+  const ins = list.filter((t) => t.amount > 0 && !transfers.has(t));
+  for (const o of outs) {
+    const match = ins.find(
+      (i) =>
+        !transfers.has(i) &&
+        i.account_uid !== o.account_uid &&
+        i.currency === o.currency &&
+        i.amount === -o.amount &&
+        Math.abs(Date.parse(i.date) - Date.parse(o.date)) <= 2 * dayMs,
+    );
+    if (match) {
+      transfers.add(o);
+      transfers.add(match);
+    }
+  }
+  return transfers;
+}
+
+export interface MonthTotals {
+  month: string;
+  currency: string;
+  money_in: number;
+  money_out: number;
+  net: number;
+  count: number;
+}
+
+/** Money in and out per calendar month and currency, leaving out the transactions in `exclude`. */
+export function totalsByMonth(list: AccountTransaction[], exclude: Set<AccountTransaction>): MonthTotals[] {
+  const rows = new Map<string, MonthTotals>();
+  for (const t of list) {
+    if (exclude.has(t) || !t.date) continue;
+    const month = t.date.slice(0, 7);
+    const key = `${month} ${t.currency}`;
+    const row = rows.get(key) ?? { month, currency: t.currency, money_in: 0, money_out: 0, net: 0, count: 0 };
+    if (t.amount > 0) row.money_in += t.amount;
+    else row.money_out += t.amount;
+    row.count += 1;
+    rows.set(key, row);
+  }
+  return [...rows.values()]
+    .map((r) => ({ ...r, money_in: round2(r.money_in), money_out: round2(r.money_out), net: round2(r.money_in + r.money_out) }))
+    .sort((a, b) => (a.month === b.month ? a.currency.localeCompare(b.currency) : a.month.localeCompare(b.month)));
 }
 
 export function describeAccount(a: StoredAccount, s?: StoredSession) {
