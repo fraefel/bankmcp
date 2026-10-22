@@ -8,8 +8,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { config, isConfigured, setupProblems } from "./config.ts";
 import { eb, EnableBankingError } from "./enablebanking.ts";
 import { store } from "./store.ts";
-import { SingleUserProvider } from "./auth.ts";
-import { connectedPage, failedPage, loginPage, privacyPage, returningPage, setupPage, signedInPage, welcomePage, checkEmailPage, signInFailedPage, statusPage, termsPage } from "./pages.ts";
+import { attestOnly, SCOPE_ATTEST, SCOPE_READ, SingleUserProvider } from "./auth.ts";
+import { connectedPage, failedPage, privacyPage, returningPage, setupPage, signedInPage, welcomePage, checkEmailPage, signInFailedPage, statusPage, termsPage } from "./pages.ts";
 import { applyPassword, applySetup, setupAvailable } from "./setup.ts";
 import { finishRegistration, pendingEmail, registeredButUnfinished, startRegistration } from "./register.ts";
 import { createServer, VERSION } from "./mcp.ts";
@@ -170,7 +170,7 @@ export function createApp(opts: AppOptions) {
       issuerUrl: baseUrl,
       resourceServerUrl: mcpUrl,
       resourceName: "bank-mcp",
-      scopesSupported: ["bank:read"],
+      scopesSupported: [SCOPE_READ, SCOPE_ATTEST],
       clientRegistrationOptions: { clientSecretExpirySeconds: 0 },
     }),
   );
@@ -190,7 +190,7 @@ export function createApp(opts: AppOptions) {
     // (Chrome applies form-action to redirects that follow one).
     if ("redirect" in result) return void res.status(200).type("html").send(returningPage(result.redirect));
     if ("done" in result) return void res.status(200).type("html").send(signedInPage());
-    if (result.requestId) return void res.status(401).type("html").send(loginPage({ requestId: result.requestId, error: result.error }));
+    if (result.requestId) return void res.status(401).type("html").send(provider.loginPageFor(result.requestId, result.error));
     res.status(400).type("html").send(signInFailedPage(result.error));
   });
 
@@ -201,7 +201,7 @@ export function createApp(opts: AppOptions) {
   // People paste the bare domain into their assistant as often as the /mcp address. Both work:
   // the MCP handler is mounted at /mcp and at the root, where GET remains the status page.
   if (opts.remote) app.post(["/mcp", "/"], bearer, express.json({ limit: "1mb" }), async (req, res) => {
-    const server = createServer();
+    const server = createServer({ attestOnly: attestOnly(req.auth?.scopes ?? []) });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       transport.close().catch(() => {});

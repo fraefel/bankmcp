@@ -76,12 +76,16 @@ export function shell(title: string, body: string, opts: { kind?: Kind; pill?: s
 </div></body></html>`;
 }
 
-export function loginPage(opts: { requestId: string; clientName?: string; returnTo?: string; error?: string }): string {
+export function loginPage(opts: { requestId: string; clientName?: string; returnTo?: string; error?: string; attestOnly?: boolean; balanceCeiling?: number }): string {
   const who = opts.clientName ? `<b>${esc(opts.clientName)}</b>` : "An app";
   const back = opts.returnTo ? `<p class="muted">After signing in you are sent back to <b>${esc(opts.returnTo)}</b>. Stop if that is not where you came from.</p>` : "";
   return shell(
     "Allow access?",
-    `<p>${who} wants read-only access to your bank accounts through this server. It reads balances and transactions. It has no payment tools.</p>${back}
+    `${
+      opts.attestOnly
+        ? `<p>${who} wants to ask whether an IBAN is one of your accounts, and get a signed yes or no${opts.balanceCeiling ? ` (and whether it holds at least an amount up to ${esc(String(opts.balanceCeiling))})` : ""}. It cannot see your balances, transactions or list of accounts.</p>`
+        : `<p>${who} wants read-only access to your bank accounts through this server. It reads <b>all</b> balances and transactions. It has no payment tools.</p>`
+    }${back}
      ${opts.error ? `<p class="error">${esc(opts.error)}</p>` : ""}
      <form method="post" action="/login">
        <input type="hidden" name="request" value="${esc(opts.requestId)}">

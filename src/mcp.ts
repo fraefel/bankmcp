@@ -5,7 +5,16 @@ import { attestationEnabled } from "./attestation.ts";
 
 export const VERSION = "0.1.15";
 
-export function createServer(): McpServer {
+/** The MCP server for one request. `attestOnly` is for a token granted bank:attest alone: it gets attest_account and nothing else. */
+export function createServer(opts: { attestOnly?: boolean } = {}): McpServer {
+  if (opts.attestOnly) {
+    const server = new McpServer(
+      { name: "bank", version: VERSION },
+      { instructions: "Answers one question for a third party: whether an IBAN belongs to the owner, as a signed object (attest_account). Nothing else is available with this access." },
+    );
+    registerTools(server, { attestOnly: true });
+    return server;
+  }
   const server = new McpServer(
     { name: "bank", version: VERSION },
     {

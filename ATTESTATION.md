@@ -23,6 +23,14 @@ This does not add payment initiation, and it does not widen your PSD2 consent. T
 
 Nothing is sent anywhere on its own: a third party asks, over an authenticated MCP connection you granted, and gets an answer about the one IBAN they named.
 
+## Giving a verifier access
+
+A verifier connects like any MCP client, with OAuth, and must ask for the scope `bank:attest` (and not `bank:read`). Its redirect host has to be in `ALLOWED_REDIRECT_HOSTS`.
+
+You approve it on your server's sign-in page with your admin password. For a `bank:attest` request the page says the service can only ask whether an IBAN is yours; for anything else it says the service reads **all** balances and transactions. If a verifier's sign-in page says the latter, stop: it did not ask for attestation-only access.
+
+A `bank:attest` token sees one tool, `attest_account`, and nothing else: not `list_accounts`, `get_balances` or `get_transactions`. Refreshing it cannot widen it.
+
 ## Turning it on
 
 ```bash
